@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Workspace Agent</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .chat-bubble-user { background-color: #3b82f6; color: white; border-bottom-right-radius: 0; }
+        .chat-bubble-agent { background-color: #e5e7eb; color: #1f2937; border-bottom-left-radius: 0; }
+        #loading-spinner { display: none; }
+        
+        /* Markdown Styles */
+        .markdown-body p { margin-bottom: 0.5em; }
+        .markdown-body ul { list-style-type: disc; margin-left: 1.5em; margin-bottom: 0.5em; }
+        .markdown-body ol { list-style-type: decimal; margin-left: 1.5em; margin-bottom: 0.5em; }
+        .markdown-body strong { font-weight: 700; }
+        .markdown-body em { font-style: italic; }
+        
+        #chat-messages::-webkit-scrollbar { width: 6px; }
+        #chat-messages::-webkit-scrollbar-track { background: transparent; }
+        #chat-messages::-webkit-scrollbar-thumb { background-color: rgba(156, 163, 175, 0.5); border-radius: 20px; }
+    </style>
+</head>
+<body class="bg-gray-100 flex items-center justify-center h-screen overflow-hidden">
+
+    <div class="bg-white w-full max-w-2xl h-[90vh] md:h-[80vh] rounded-lg shadow-xl flex flex-col overflow-hidden m-4">
+        
+        <div class="bg-gray-800 text-white p-4 flex justify-between items-center shadow-md flex-shrink-0">
+            <h1 class="text-xl font-bold">Google Workspace Agent</h1>
+            <div class="flex items-center space-x-2">
+                <!-- Clear Chat Button -->
+                <button id="clear-chat-button" class="text-gray-300 hover:text-white p-1" title="Clear Chat History">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                </button>
+                <!-- Settings Button -->
+                <button id="settings-button" class="text-gray-300 hover:text-white p-1" title="Settings">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                </button>
+            </div>
+        </div>
+
+        <div id="auth-wall" class="flex flex-col items-center justify-center h-full p-8 text-center flex-grow">
+            <h2 class="text-2xl font-semibold mb-4 text-gray-700">Welcome to your Agent</h2>
+            <p class="mb-6 text-gray-500">Please sign in with Google to get started.</p>
+            <button id="auth-button" class="bg-blue-600 text-white font-semibold py-2 px-6 rounded-lg shadow hover:bg-blue-700 transition duration-200">Sign in with Google</button>
+            <p id="auth-status" class="text-sm text-red-500 mt-4"></p>
+        </div>
+
+        <div id="chat-area" class="hidden flex-1 flex flex-col overflow-hidden">
+            <div id="chat-messages" class="flex-1 p-6 space-y-4 overflow-y-auto scroll-smooth">
+                <div class="flex justify-start">
+                    <div class="chat-bubble-agent p-3 rounded-lg max-w-xs md:max-w-md"><p class="text-sm">I'm ready! You can ask me to search your email or create a calendar event.</p></div>
+                </div>
+            </div>
+            
+            <div id="loading-spinner" class="flex justify-start p-6 flex-shrink-0">
+                <div class="chat-bubble-agent p-3 rounded-lg flex items-center"><svg class="animate-spin h-5 w-5 text-gray-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg></div>
+            </div>
+            
+            <div class="p-4 bg-gray-50 border-t flex-shrink-0">
+                <form id="chat-form" class="flex space-x-3">
+                    <input type="text" id="chat-input" placeholder="Ask your agent..." class="flex-1 border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" autocomplete="off">
+                    <button type="submit" class="bg-blue-600 text-white font-semibold px-5 py-2 rounded-lg shadow hover:bg-blue-700 transition duration-200">Send</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div id="settings-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 p-4">
+        <div class="bg-white p-8 rounded-lg shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <h2 class="text-2xl font-bold mb-6">Settings</h2>
+            <div class="mb-4">
+                <label for="client-id-input" class="block text-sm font-medium text-gray-700 mb-1">Google Client ID (Web app)</label>
+                <input type="text" id="client-id-input" class="w-full border border-gray-300 rounded-lg px-3 py-2" placeholder="12345-abc.apps.googleusercontent.com">
+            </div>
+            <div class="flex justify-end space-x-3">
+                <button id="settings-cancel" class="bg-gray-200 text-gray-700 font-semibold px-4 py-2 rounded-lg hover:bg-gray-300">Cancel</button>
+                <button id="settings-save" class="bg-green-600 text-white font-semibold px-4 py-2 rounded-lg hover:bg-green-700">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        let GOOGLE_CLIENT_ID = "";
+        const SCOPES = ['https://www.googleapis.com/auth/calendar', 'https://www.googleapis.com/auth/gmail.readonly'];
+        let tokenClient;
+        let gapiLoaded = false;
+        let gisLoaded = false;
+        let chatHistory = [];
+
+        const settingsModal = document.getElementById('settings-modal');
+        const settingsButton = document.getElementById('settings-button');
+        const clearChatButton = document.getElementById('clear-chat-button'); // NEW
+        const settingsSave = document.getElementById('settings-save');
+        const settingsCancel = document.getElementById('settings-cancel');
+        const clientIdInput = document.getElementById('client-id-input');
+        const authWall = document.getElementById('auth-wall');
+        const authButton = document.getElementById('auth-button');
+        const authStatus = document.getElementById('auth-status');
+        const chatArea = document.getElementById('chat-area');
+        const chatMessages = document.getElementById('chat-messages');
+        const chatForm = document.getElementById('chat-form');
+        const chatInput = document.getElementById('chat-input');
+        const loadingSpinner = document.getElementById('loading-spinner');
+
+        const availableTools = {
+            "tool_create_calendar_event": tool_create_calendar_event,
+            "tool_search_gmail": tool_search_gmail,
+        };
+
+        // --- HISTORY MANAGEMENT ---
+        function saveHistory() {
+            localStorage.setItem('chatHistory', JSON.stringify(chatHistory));
+        }
+
+        function loadHistory() {
+            const saved = localStorage.getItem('chatHistory');
+            if (saved) {
+                chatHistory = JSON.parse(saved);
+                // Re-render messages on screen
+                chatHistory.forEach(item => {
+                    // We only want to render user and model messages, not function calls
+                    if (item.role === 'user') {
+                        const text = item.parts[0].text;
+                        addMessageToChat('user', text, false); // false = don't save again
+                    } else if (item.role === 'model') {
+                        const part = item.parts[0];
+                        if (part.text) {
+                            addMessageToChat('agent', marked.parse(part.text), false);
+                        }
+                    }
+                });
+            }
+        }
+
+        function clearHistory() {
+            chatHistory = [];
+            localStorage.removeItem('chatHistory');
+            chatMessages.innerHTML = '<div class="flex justify-start"><div class="chat-bubble-agent p-3 rounded-lg max-w-xs md:max-w-md"><p class="text-sm">I\'m ready! You can ask me to search your email or create a calendar event.</p></div></div>';
+        }
+
+        async function runAgentConversation(userMessage) {
+            setLoading(true);
+
+            if(userMessage) {
+                chatHistory.push({ "role": "user", "parts": [{ "text": userMessage }] });
+                saveHistory(); // Save after user input
+            }
+
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ history: chatHistory })
+                });
+                
+                if (!response.ok) {
+                    const errorBody = await response.json();
+                    throw new Error(errorBody.error || `Server error: ${response.status}`);
+                }
+
+                const result = await response.json();
+                const part = result.response_part;
+                
+                // Update local history with server's authoritative history
+                chatHistory = result.updated_history || [];
+                saveHistory(); // Save after server response
+
+                if (part.functionCall) {
+                    const call = part.functionCall;
+                    const functionName = call.name;
+                    if (functionName in availableTools) {
+                        console.log(`Agent calling ${functionName}...`);
+                        const toolFunction = availableTools[functionName];
+                        const functionResult = await toolFunction(call.args);
+                        
+                        chatHistory.push({
+                            "role": "function",
+                            "parts": [{ "functionResponse": { "name": functionName, "response": functionResult } }]
+                        });
+                        saveHistory();
+                        runAgentConversation(); 
+                    }
+                } else if (part.text) {
+                    setLoading(false);
+                    addMessageToChat('agent', marked.parse(part.text), false); // false because history is already updated
+                }
+            } catch (error) {
+                console.error(error);
+                setLoading(false);
+                addMessageToChat('agent', `An error occurred: ${error.message}`, false);
+                // Don't save error state history logic here to keep it simple
+            }
+        }
+
+        // ... (Tools functions remain the same) ...
+        async function tool_search_gmail(args) {
+            try {
+                const response = await gapi.client.gmail.users.messages.list({ 'userId': 'me', 'q': args.query, 'maxResults': 1 });
+                const messages = response.result.messages;
+                if (!messages || messages.length === 0) return { "status": "no_messages_found", "query": args.query };
+                const msg = await gapi.client.gmail.users.messages.get({ 'userId': 'me', 'id': messages[0].id, 'format': 'metadata' });
+                const headers = msg.result.payload.headers;
+                const subject = headers.find(h => h.name === 'Subject')?.value || 'No Subject';
+                const sender = headers.find(h => h.name === 'From')?.value || 'Unknown Sender';
+                return { "status": "success", "id": messages[0].id, "snippet": msg.result.snippet, "subject": subject, "from": sender };
+            } catch (error) { return { "error": error.message || "Failed to search Gmail." }; }
+        }
+
+        async function tool_create_calendar_event(args) {
+            try {
+                const calendarListEntry = await gapi.client.calendar.calendarList.get({ 'calendarId': 'primary' });
+                const userTimezone = calendarListEntry.result.timeZone || 'America/Los_Angeles';
+                const event = { 'summary': args.summary, 'location': args.location || "", 'description': args.description || "", 'start': { 'dateTime': args.start_time, 'timeZone': userTimezone }, 'end': { 'dateTime': args.end_time, 'timeZone': userTimezone } };
+                const response = await gapi.client.calendar.events.insert({ 'calendarId': 'primary', 'resource': event });
+                return { "status": "success", "summary": response.result.summary, "htmlLink": response.result.htmlLink };
+            } catch (error) { return { "error": error.message || "Failed to create event." }; }
+        }
+
+        // ... (Auth functions remain the same) ...
+        function initializeGis() {
+            if (!GOOGLE_CLIENT_ID) { authStatus.textContent = "Client ID missing."; return; }
+            tokenClient = google.accounts.oauth2.initTokenClient({
+                client_id: GOOGLE_CLIENT_ID, scope: SCOPES.join(' '),
+                callback: (tokenResponse) => {
+                    if (tokenResponse.error) { authStatus.textContent = `Error: ${tokenResponse.error}`; } 
+                    else { 
+                        gapi.client.setToken(tokenResponse); 
+                        authWall.classList.add('hidden'); chatArea.classList.remove('hidden'); chatArea.classList.add('flex'); 
+                        loadHistory(); // LOAD HISTORY ON LOGIN
+                    }
+                },
+            });
+            gisLoaded = true;
+        }
+        function handleAuthClick() {
+            if (gisLoaded && gapiLoaded) tokenClient.requestAccessToken();
+            else authStatus.textContent = "Libraries loading...";
+        }
+
+        // Modified to support skipping save (since we save history state separately)
+        function addMessageToChat(role, textOrHtml, save = true) {
+            const messageDiv = document.createElement('div');
+            messageDiv.classList.add('flex', (role === 'user' ? 'justify-end' : 'justify-start'));
+            const bubble = document.createElement('div');
+            bubble.classList.add('p-3', 'rounded-lg', 'max-w-xs', 'md:max-w-md', 'shadow', role === 'user' ? 'chat-bubble-user' : 'chat-bubble-agent');
+            bubble.classList.add('markdown-body');
+
+            if (role === 'user') {
+                bubble.textContent = textOrHtml; 
+            } else {
+                bubble.innerHTML = textOrHtml;
+            }
+            
+            messageDiv.appendChild(bubble);
+            chatMessages.appendChild(messageDiv);
+            requestAnimationFrame(() => {
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            });
+        }
+
+        function setLoading(isLoading) {
+            loadingSpinner.style.display = isLoading ? 'flex' : 'none';
+            chatInput.disabled = isLoading;
+            if (!isLoading) chatInput.focus();
+        }
+        chatForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const message = chatInput.value.trim();
+            if (message) { addMessageToChat('user', message); chatInput.value = ''; runAgentConversation(message); }
+        });
+        settingsButton.addEventListener('click', () => { clientIdInput.value = localStorage.getItem('GOOGLE_CLIENT_ID') || ''; settingsModal.classList.remove('hidden'); });
+        clearChatButton.addEventListener('click', () => { 
+            if(confirm("Are you sure you want to clear the chat history?")) {
+                clearHistory(); 
+            }
+        });
+        settingsCancel.addEventListener('click', () => { settingsModal.classList.add('hidden'); });
+        settingsSave.addEventListener('click', () => {
+            GOOGLE_CLIENT_ID = clientIdInput.value.trim();
+            if (GOOGLE_CLIENT_ID) localStorage.setItem('GOOGLE_CLIENT_ID', GOOGLE_CLIENT_ID);
+            settingsModal.classList.add('hidden');
+            if (GOOGLE_CLIENT_ID && !gisLoaded) initializeGis();
+        });
+        function onGapiLoaded() {
+            gapi.load('client', async () => {
+                try { await gapi.client.load('https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest'); await gapi.client.load('https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest'); gapiLoaded = true; } 
+                catch (error) { console.error(error); authStatus.textContent = "Error loading APIs."; }
+            });
+        }
+        function onGisLoaded() { if (GOOGLE_CLIENT_ID) initializeGis(); }
+        function startApp() {
+            GOOGLE_CLIENT_ID = localStorage.getItem('GOOGLE_CLIENT_ID');
+            if (!GOOGLE_CLIENT_ID) settingsModal.classList.remove('hidden');
+            window.onGapiLoaded = onGapiLoaded; window.onGisLoaded = onGisLoaded;
+            const s1 = document.createElement('script'); s1.src = 'https://apis.google.com/js/api.js?onload=onGapiLoaded'; s1.async = true; s1.defer = true; document.body.appendChild(s1);
+            const i = setInterval(() => { if (window.google && window.google.accounts) { clearInterval(i); onGisLoaded(); } }, 100);
+            authButton.addEventListener('click', handleAuthClick);
+        }
+        startApp();
+    </script>
+</body>
+</html>
