@@ -1,25 +1,47 @@
 import os
 import json
+import uuid
+import logging
 import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from datetime import datetime
-import pytz # You might need to install this: pip install pytz
+import pytz
+import traceback
 
 # --- CONFIGURATION ---
 app = Flask(__name__)
 CORS(app)
 
-# Get API key from environment
+# Setup logging (console + file, structured JSON)
+LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.DEBUG),
+    format="%(message)s",  # raw JSON string for structured entries
+    handlers=[
+        logging.FileHandler("chat_agent.log"),
+        logging.StreamHandler()
+    ]
+)
+
+def log_event(event_type, request_id, details):
+    """Structured JSON logging for events."""
+    log_entry = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "event": event_type,
+        "request_id": request_id,
+        "details": details
+    }
+    logging.info(json.dumps(log_entry))
+
+# --- ENVIRONMENT ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
-    print("WARNING: GEMINI_API_KEY not set in environment.")
+    logging.error(json.dumps({"error": "GEMINI_API_KEY not set in environment"}))
+    raise RuntimeError("GEMINI_API_KEY not set in environment")
 
-def configure_genai():
-    if GEMINI_API_KEY:
-        genai.configure(api_key=GEMINI_API_KEY)
-
-configure_genai()
+genai.configure(api_key=GEMINI_API_KEY)
 
 # --- GEMINI TOOLS ---
 gemini_tools = [
@@ -53,10 +75,9 @@ gemini_tools = [
 ]
 
 # --- HELPERS ---
-
 def sanitize_history_for_gemini(history):
     sanitized = []
-    for i, item in enumerate(history):
+    for item in history:
         new_parts = []
         for part in item.get('parts', []):
             new_part = {}
@@ -70,127 +91,164 @@ def sanitize_history_for_gemini(history):
                 new_part['function_response'] = part['functionResponse']
             elif 'function_response' in part:
                 new_part['function_response'] = part['function_response']
-            
             if new_part:
                 new_parts.append(new_part)
-        
         if new_parts:
-            sanitized.append({
-                "role": item['role'],
-                "parts": new_parts
-            })
+            sanitized.append({"role": item.get('role', 'user'), "parts": new_parts})
     return sanitized
 
 def part_to_dict(part):
-    if part.text:
-        return {"text": part.text}
-    elif part.function_call:
-        return {
-            "functionCall": {
-                "name": part.function_call.name,
-                "args": dict(part.function_call.args)
+    # Safe conversion of a Gemini content part
+    try:
+        if getattr(part, 'text', None):
+            return {"text": part.text}
+        if getattr(part, 'function_call', None):
+            return {
+                "functionCall": {
+                    "name": part.function_call.name,
+                    "args": dict(part.function_call.args)
+                }
             }
-        }
+    except Exception as e:
+        return {"error": f"part_to_dict_failed: {str(e)}"}
     return {}
 
 def history_to_dict(history):
-    serialized_history = []
-    for content in history:
-        parts = []
-        for part in content.parts:
-            parts.append(part_to_dict(part))
-        serialized_history.append({
-            "role": content.role,
-            "parts": parts
-        })
-    return serialized_history
+    safe = []
+    for c in history:
+        parts_out = []
+        for p in getattr(c, 'parts', []) or []:
+            parts_out.append(part_to_dict(p))
+        safe.append({"role": getattr(c, 'role', 'model'), "parts": parts_out})
+    return safe
+
+def extract_user_text_from_item(item):
+    # Robustly pull user text from the last message item
+    parts = item.get('parts', [])
+    if not parts:
+        return ""
+    first = parts[0]
+    return first.get('text', "")
+
+def safe_first_part_from_response(response):
+    # Safely return the first part dict from response, even if empty
+    try:
+        candidates = getattr(response, 'candidates', None)
+        if not candidates:
+            return {"text": ""}
+        content = getattr(candidates[0], 'content', None)
+        if not content:
+            return {"text": ""}
+        parts = getattr(content, 'parts', None) or []
+        if not parts:
+            # If the model returned an empty parts list, try content.text or fallback
+            text_attr = getattr(content, 'text', "")
+            return {"text": text_attr if text_attr else ""}
+        return part_to_dict(parts[0])
+    except Exception as e:
+        return {"error": f"safe_first_part_from_response_failed: {str(e)}"}
 
 # --- API ENDPOINT ---
 @app.route('/api/chat', methods=['POST'])
 def chat_handler():
-    if not GEMINI_API_KEY:
-         return jsonify({"error": "Server is missing GEMINI_API_KEY."}), 500
-
+    request_id = str(uuid.uuid4())
     try:
-        data = request.json
+        data = request.json or {}
         raw_history = data.get('history', [])
-        # Get timezone from client, default to UTC if missing
-        user_timezone = data.get('timezone', 'UTC') 
-        
-        clean_history = sanitize_history_for_gemini(raw_history)
-        
-        if not clean_history:
-             return jsonify({"error": "No chat history received."}), 400
-             
-        last_message_item = clean_history.pop()
-        
-        user_text = ""
-        if 'parts' in last_message_item and len(last_message_item['parts']) > 0:
-             first_part = last_message_item['parts'][0]
-             if 'text' in first_part:
-                 user_text = first_part['text']
-        
-        if not user_text:
-             if 'parts' in last_message_item and len(last_message_item['parts']) > 0:
-                 if 'function_response' in last_message_item['parts'][0]:
-                     pass 
-                 else:
-                     print(f"ERROR DATA: {last_message_item}")
-                     return jsonify({"error": f"Could not find text. Item: {last_message_item}"}), 400
+        user_timezone = data.get('timezone', 'UTC')
 
-        print(f"User asked: {user_text} (Timezone: {user_timezone})")
-        
-        # --- CALCULATE LIVE DATE AND TIME ---
-        # We use the user's timezone for the system prompt
+        log_event("request_received", request_id, {"raw_history_len": len(raw_history), "timezone": user_timezone})
+
+        clean_history = sanitize_history_for_gemini(raw_history)
+        log_event("history_sanitized", request_id, {"clean_history_len": len(clean_history)})
+
+        if not clean_history:
+            return jsonify({"error": "No chat history received.", "request_id": request_id}), 400
+
+        # Pop the last item (user or tool response), with guard
+        last_message_item = clean_history.pop()
+        log_event("last_message_item", request_id, {"parts_len": len(last_message_item.get('parts', [])), "role": last_message_item.get('role')})
+
+        # Extract user text safely
+        user_text = extract_user_text_from_item(last_message_item)
+        log_event("user_text_extracted", request_id, {"user_text_len": len(user_text)})
+
+        # Timezone and current time
         try:
             tz = pytz.timezone(user_timezone)
             now = datetime.now(tz)
-        except:
-            now = datetime.now() # Fallback to server time
-            
-        current_date = now.strftime("%Y-%m-%d")
-        current_time = now.strftime("%H:%M:%S")
-        weekday = now.strftime("%A")
-        
+            tz_ok = True
+        except Exception as tz_err:
+            now = datetime.now()
+            tz_ok = False
+            log_event("timezone_error", request_id, {"error": str(tz_err)})
+        log_event("datetime_calculated", request_id, {"datetime": now.isoformat(), "timezone_ok": tz_ok})
+
         system_prompt = f"""
         You are a helpful assistant connected to Google Workspace.
         
         CRITICAL CONTEXT:
         - User's Timezone: {user_timezone}
-        - Current Date: {current_date} ({weekday})
-        - Current Time: {current_time}
+        - Current Date: {now.strftime("%Y-%m-%d")} ({now.strftime("%A")})
+        - Current Time: {now.strftime("%H:%M:%S")}
         
         INSTRUCTIONS:
-        1. When the user asks to create an event (e.g., "tomorrow at 2pm"), calculate the ISO 8601 date/time relative to the User's Current Date/Time.
+        1. When the user asks for relative dates like 'tomorrow', 'next Monday', or 'today', you MUST calculate the exact ISO 8601 date based on the current date provided above.
         2. Always include the '{user_timezone}' in the 'time_zone' parameter when calling the 'tool_create_calendar_event' tool.
         """
-        
+
+        safety_settings = {
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+        }
+
         model = genai.GenerativeModel(
             model_name='gemini-2.5-flash-preview-09-2025',
             tools=gemini_tools,
-            system_instruction=system_prompt
+            system_instruction=system_prompt,
+            safety_settings=safety_settings
         )
-        
-        chat = model.start_chat(history=clean_history)
-        
-        if user_text:
-            response = chat.send_message(user_text)
-        else:
-            last_item = clean_history.pop() 
-            response = chat.send_message(last_item['parts'])
 
-        response_part = response.candidates[0].content.parts[0]
-        
+        # Start chat with remaining history (no more pops later)
+        chat = model.start_chat(history=clean_history)
+        log_event("chat_started", request_id, {"history_len": len(clean_history)})
+
+        # Decide what to send:
+        # - If we have user_text, send that.
+        # - Else, if last_message_item has parts, send those parts.
+        # - Else, error.
+        if user_text:
+            message_payload = user_text
+            msg_type = "user_text"
+        elif last_message_item.get('parts'):
+            message_payload = last_message_item['parts']
+            msg_type = "last_item_parts"
+        else:
+            return jsonify({"error": "No user text or function response available.", "request_id": request_id}), 400
+
+        log_event("message_sending", request_id, {"type": msg_type})
+        response = chat.send_message(message_payload)
+
+        # Handle response safely
+        if not getattr(response, 'candidates', None):
+            log_event("response_blocked", request_id, {"reason": "empty candidates"})
+            return jsonify({"error": "The AI model blocked the response. Try rephrasing.", "request_id": request_id}), 400
+
+        # Safely extract first part without indexing errors
+        response_part = safe_first_part_from_response(response)
+        log_event("response_received", request_id, {"has_text": "text" in response_part, "has_error": "error" in response_part})
+
         return jsonify({
-            "response_part": part_to_dict(response_part),
-            "updated_history": history_to_dict(chat.history)
+            "response_part": response_part,
+            "updated_history": history_to_dict(chat.history),
+            "request_id": request_id
         })
 
     except Exception as e:
-        print(f"Error in /api/chat: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+        log_event("error", request_id, {"error": str(e), "traceback": traceback.format_exc()})
+        return jsonify({"error": str(e), "request_id": request_id}), 500
 
 # --- SERVE HTML ---
 @app.route('/')
@@ -202,6 +260,9 @@ def serve_static(path):
     return send_from_directory('.', path)
 
 if __name__ == '__main__':
-    print("Flask server running...")
-    print("Your app will be at: http://localhost:8000")
-    app.run(port=8000, debug=True)
+    log_event("server_start", "system", {"message": "Flask server running"})
+    logging.info("Your app will be at: http://localhost:8000")
+    try:
+        app.run(port=8000, debug=True)
+    except KeyboardInterrupt:
+        log_event("server_stop", "system", {"message": "Server stopped manually"})
