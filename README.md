@@ -139,12 +139,6 @@ App URL:
 
 ---
 
-## 📸 Screenshots
-
-(Add your screenshot links here)
-
----
-
 ## 🛠️ Tech Stack
 
 * Frontend: HTML, JavaScript, Tailwind CSS
